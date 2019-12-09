@@ -78,7 +78,6 @@ func main() {
 			log.Println(err)
 			break
 		}
-		log.Println("Job:", job)
 
 		// Handle Job
 		for retry := 0; retry < 3; retry++ {
@@ -107,6 +106,8 @@ func main() {
 			job.Body = string(body)
 			break
 		}
+
+		log.Println("Completed:", job.URL.String(), job.StatusCode)
 
 		// Send Result
 		Send <- job

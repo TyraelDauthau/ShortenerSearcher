@@ -17,13 +17,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var correct []string
+var correct = []string{}
 var correctLock sync.RWMutex
 
 var jobs map[string]*Job
 var jobsLock sync.RWMutex
 
-var jobsCompleted []string
+var jobsCompleted = []string{}
 var jobsCompletedLock sync.RWMutex
 
 var workers map[string]*Worker
@@ -32,7 +32,7 @@ var workerLock sync.RWMutex
 func main() {
 	addr := flag.String("addr", ":8080", "http service address")
 	flag.Parse()
-	
+
 	log.SetFlags(log.Ldate | log.Ltime | log.Llongfile)
 
 	workers = make(map[string]*Worker)
@@ -60,13 +60,13 @@ func main() {
 			trimmed := strings.TrimSpace(link)
 			if len(trimmed) > 0 {
 				found := false
-				jobsCompletedLock.Lock()
+				jobsCompletedLock.RLock()
 				for _, c := range jobsCompleted {
 					if c == trimmed {
 						found = true
 					}
 				}
-				jobsCompletedLock.Unlock()
+				jobsCompletedLock.RUnlock()
 
 				if !found {
 					u, err := url.Parse(trimmed)
@@ -85,9 +85,13 @@ func main() {
 
 	http.HandleFunc("/", home)
 	http.HandleFunc("/permutations", permutationList)
+	http.HandleFunc("/permutations/count", permutationCount)
 	http.HandleFunc("/permutations/remaining", permutationRemainingList)
+	http.HandleFunc("/permutations/remaining/count", permutationRemainingCount)
 	http.HandleFunc("/permutations/complete", permutationCompletedList)
+	http.HandleFunc("/permutations/complete/count", permutationCompletedCount)
 	http.HandleFunc("/permutations/succeeded", succeededList)
+	http.HandleFunc("/permutations/succeeded/count", succeededCount)
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 
@@ -147,31 +151,37 @@ func permutationList(w http.ResponseWriter, r *http.Request) {
 		var Buf bytes.Buffer
 		io.Copy(&Buf, file)
 
+		var newJobs []*Job
+
 		contents := Buf.String()
 		for _, link := range strings.Split(contents, "\n") {
 			trimmed := strings.TrimSpace(link)
 			if len(trimmed) > 0 {
 				found := false
-				jobsCompletedLock.Lock()
+				jobsCompletedLock.RLock()
 				for _, c := range jobsCompleted {
 					if c == trimmed {
 						found = true
 					}
 				}
-				jobsCompletedLock.Unlock()
+				jobsCompletedLock.RUnlock()
 
 				if !found {
 					u, err := url.Parse(trimmed)
 					if err != nil {
 						log.Fatalln(err)
 					}
-
-					jobsLock.Lock()
-					jobs[u.String()] = &Job{URL: u, StatusCode: -1, Body: ""}
-					jobsLock.Unlock()
+					
+					newJobs = append(newJobs, &Job{URL: u, StatusCode: -1, Body: ""})
 				}
 			}
 		}
+
+		jobsLock.Lock()
+		for _, j := range newJobs {
+			jobs[j.URL.String()] = j
+		}
+		jobsLock.Unlock()
 		return
 	}
 
@@ -239,6 +249,27 @@ func permutationList(w http.ResponseWriter, r *http.Request) {
 	w.Write(js)
 }
 
+func permutationCount(w http.ResponseWriter, r *http.Request) {
+	result := 0
+
+	jobsLock.RLock()
+	result += len(jobs)
+	jobsLock.RUnlock()
+
+	jobsCompletedLock.RLock()
+	result += len(jobsCompleted)
+	jobsCompletedLock.RUnlock()
+
+	js, err := json.Marshal(&result)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(js)
+}
+
 func permutationRemainingList(w http.ResponseWriter, r *http.Request) {
 	result := []string{}
 
@@ -246,6 +277,22 @@ func permutationRemainingList(w http.ResponseWriter, r *http.Request) {
 	for _, link := range jobs {
 		result = append(result, link.URL.String())
 	}
+	jobsLock.RUnlock()
+
+	js, err := json.Marshal(&result)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(js)
+}
+
+
+func permutationRemainingCount(w http.ResponseWriter, r *http.Request) {
+	jobsLock.RLock()
+	result := len(jobs)
 	jobsLock.RUnlock()
 
 	js, err := json.Marshal(&result)
@@ -272,11 +319,41 @@ func permutationCompletedList(w http.ResponseWriter, r *http.Request) {
 	w.Write(js)
 }
 
+func permutationCompletedCount(w http.ResponseWriter, r *http.Request) {
+	jobsCompletedLock.RLock()
+	result := len(jobsCompleted)
+	jobsCompletedLock.RUnlock()
+
+	js, err := json.Marshal(&result)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(js)
+}
+
 func succeededList(w http.ResponseWriter, r *http.Request) {
 	correctLock.RLock()
 	js, err := json.Marshal(&correct)
 	correctLock.RUnlock()
 
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(js)
+}
+
+func succeededCount(w http.ResponseWriter, r *http.Request) {
+	jobsCompletedLock.RLock()
+	result := len(correct)
+	jobsCompletedLock.RUnlock()
+
+	js, err := json.Marshal(&result)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -436,6 +513,7 @@ func (s *Worker) Run() {
 	for {
 		// Start job if it has none
 		if s.Current == nil {
+			jobsLock.Lock()
 			for i := range jobs {
 				if jobs[i].Worker == "" {
 					jobs[i].Worker = s.Hostname
@@ -444,6 +522,7 @@ func (s *Worker) Run() {
 					break
 				}
 			}
+			jobsLock.Unlock()
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
