@@ -171,7 +171,7 @@ func permutationList(w http.ResponseWriter, r *http.Request) {
 					if err != nil {
 						log.Fatalln(err)
 					}
-					
+
 					newJobs = append(newJobs, &Job{URL: u, StatusCode: -1, Body: ""})
 				}
 			}
@@ -288,7 +288,6 @@ func permutationRemainingList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(js)
 }
-
 
 func permutationRemainingCount(w http.ResponseWriter, r *http.Request) {
 	jobsLock.RLock()
@@ -444,11 +443,11 @@ func (s *Worker) Read() {
 		s.Connection.Close()
 	}()
 
-	s.Connection.SetReadDeadline(time.Now().Add(60 * time.Second))
+	/*s.Connection.SetReadDeadline(time.Now().Add(60 * time.Second))
 	s.Connection.SetPongHandler(func(string) error {
 		s.Connection.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
-	})
+	})*/
 
 	for {
 		var result Job

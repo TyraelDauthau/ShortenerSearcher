@@ -7,9 +7,12 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/net/proxy"
 )
 
 type Job struct {
@@ -27,6 +30,21 @@ func main() {
 	flag.IntVar(&clientPort, "port", 8080, "Device Server Port")
 	flag.Parse()
 
+	eHostname := os.Getenv("CLIENT_HOSTNAME")
+	if clientDevice == "" && eHostname != "" {
+		clientDevice = eHostname
+	}
+
+	eHost := os.Getenv("CLIENT_HOST")
+	if clientHost == "127.0.0.1" && eHost != "127.0.0.1" {
+		clientHost = eHost
+	}
+
+	ePort, err := strconv.Atoi(os.Getenv("CLIENT_PORT"))
+	if err == nil && clientPort == 8080 && ePort != 8080 {
+		clientPort = ePort
+	}
+
 	// Setup Communication
 	u, err := url.Parse(fmt.Sprintf("ws://%s:%d/?hostname=%s", clientHost, clientPort, clientDevice))
 	if err != nil {
@@ -41,8 +59,8 @@ func main() {
 	}
 	defer c.Close()
 
-	c.SetReadDeadline(time.Now().Add(60 * time.Second))
-	c.SetPongHandler(func(string) error { c.SetReadDeadline(time.Now().Add(60 * time.Second)); return nil })
+	/*c.SetReadDeadline(time.Now().Add(60 * time.Second))
+	c.SetPongHandler(func(string) error { c.SetReadDeadline(time.Now().Add(60 * time.Second)); return nil })*/
 
 	Send := make(chan Job)
 	go func(con *websocket.Conn, send chan Job) {
@@ -70,6 +88,12 @@ func main() {
 	}(c, Send)
 
 	client := &http.Client{}
+
+	dialSocksProxy, err := proxy.SOCKS5("unix", "/var/run/tor/socks", nil, proxy.Direct)
+	if err == nil {
+		log.Println("Using TOR proxy")
+		client.Transport = &http.Transport{Dial: dialSocksProxy.Dial}
+	}
 
 	for {
 		// Parse Job

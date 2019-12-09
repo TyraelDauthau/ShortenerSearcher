@@ -1,0 +1,2 @@
+#!/usr/bin/with-contenv sh
+/usr/bin/tor SocksPort unix:/var/run/tor/socks DATADirectory /tmp/tor
