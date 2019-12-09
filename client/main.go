@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -19,6 +20,7 @@ type Job struct {
 	URL        *url.URL `json:"url"`
 	StatusCode int      `json:"status"`
 	Body       string   `json:"body"`
+	Correct    bool     `json:"correct"`
 }
 
 var clientPort int
@@ -128,6 +130,18 @@ func main() {
 
 			job.StatusCode = res.StatusCode
 			job.Body = string(body)
+
+			// Test if link was valid
+			if strings.Contains(job.URL.Host, "bit.do") {
+				if job.StatusCode == http.StatusOK && !strings.Contains(job.Body, "404 Not Found") {
+					job.Correct = true
+				}
+			} else {
+				if job.StatusCode == http.StatusOK {
+					job.Correct = true
+				}
+			}
+
 			break
 		}
 

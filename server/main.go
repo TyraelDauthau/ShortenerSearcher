@@ -75,7 +75,7 @@ func main() {
 					}
 
 					jobsLock.Lock()
-					jobs[u.String()] = &Job{URL: u, StatusCode: -1, Body: ""}
+					jobs[u.String()] = &Job{URL: u, StatusCode: -1, Body: "", Correct: false}
 					jobsLock.Unlock()
 				}
 			}
@@ -172,7 +172,7 @@ func permutationList(w http.ResponseWriter, r *http.Request) {
 						log.Fatalln(err)
 					}
 
-					newJobs = append(newJobs, &Job{URL: u, StatusCode: -1, Body: ""})
+					newJobs = append(newJobs, &Job{URL: u, StatusCode: -1, Body: "", Correct: false})
 				}
 			}
 		}
@@ -217,7 +217,7 @@ func permutationList(w http.ResponseWriter, r *http.Request) {
 
 		// Add to job list
 		jobsLock.Lock()
-		jobs[input] = &Job{URL: u, StatusCode: -1, Body: ""}
+		jobs[input] = &Job{URL: u, StatusCode: -1, Body: "", Correct: false}
 		jobsLock.Unlock()
 
 		w.WriteHeader(http.StatusAccepted)
@@ -427,6 +427,7 @@ type Job struct {
 	URL        *url.URL `json:"url"`
 	StatusCode int      `json:"status"`
 	Body       string   `json:"body"`
+	Correct    bool     `json:"correct"`
 	Worker     string
 }
 
@@ -465,19 +466,10 @@ func (s *Worker) Read() {
 		jobsCompleted = append(jobsCompleted, result.URL.String())
 		jobsCompletedLock.Unlock()
 
-		// Test if link was valid
-		if strings.Contains(result.URL.Host, "bit.do") {
-			if result.StatusCode == http.StatusOK && !strings.Contains(result.Body, "404 Not Found") {
-				correctLock.Lock()
-				correct = append(correct, result.URL.String())
-				correctLock.Unlock()
-			}
-		} else {
-			if result.StatusCode == http.StatusOK {
-				correctLock.Lock()
-				correct = append(correct, result.URL.String())
-				correctLock.Unlock()
-			}
+		if result.Correct {
+			correctLock.Lock()
+			correct = append(correct, result.URL.String())
+			correctLock.Unlock()
 		}
 
 		jobsLock.Lock()
