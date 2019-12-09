@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -21,7 +23,7 @@ var correctLock sync.RWMutex
 var jobs map[string]*Job
 var jobsLock sync.RWMutex
 
-var jobsCompleted []*Job
+var jobsCompleted []string
 var jobsCompletedLock sync.RWMutex
 
 var workers map[string]*Worker
@@ -30,6 +32,8 @@ var workerLock sync.RWMutex
 func main() {
 	addr := flag.String("addr", ":8080", "http service address")
 	flag.Parse()
+	
+	log.SetFlags(log.Ldate | log.Ltime | log.Llongfile)
 
 	workers = make(map[string]*Worker)
 
@@ -43,7 +47,7 @@ func main() {
 		jobsCompletedLock.Unlock()
 	}
 	fComplete.Close()
-	go SaveResults();
+	go SaveResults()
 
 	jobsLock.Lock()
 	jobs = make(map[string]*Job)
@@ -52,34 +56,38 @@ func main() {
 	// Load remaining links
 	ldata, err := ioutil.ReadFile("permutations.txt")
 	if err != nil {
-		log.Fatalln(err)
-	}
-	for _, link := range strings.Split(string(ldata), "\n") {
-		trimmed := strings.TrimSpace(link)
-		if len(trimmed) > 0 {
-			found := false
-			jobsCompletedLock.Lock()
-			for _, c := range jobsCompleted {
-				if c.URL.String() == trimmed {
-					found = true
+		for _, link := range strings.Split(string(ldata), "\n") {
+			trimmed := strings.TrimSpace(link)
+			if len(trimmed) > 0 {
+				found := false
+				jobsCompletedLock.Lock()
+				for _, c := range jobsCompleted {
+					if c == trimmed {
+						found = true
+					}
 				}
-			}
-			jobsCompletedLock.Unlock()
+				jobsCompletedLock.Unlock()
 
-			if !found {
-				u, err := url.Parse(trimmed)
-				if err != nil {
-					log.Fatalln(err)
+				if !found {
+					u, err := url.Parse(trimmed)
+					if err != nil {
+						log.Fatalln(err)
+					}
+
+					jobsLock.Lock()
+					jobs[u.String()] = &Job{URL: u, StatusCode: -1, Body: ""}
+					jobsLock.Unlock()
 				}
-
-				jobsLock.Lock()
-				jobs[u.String()] = &Job{URL: u, StatusCode: -1, Body: ""}
-				jobsLock.Unlock()
 			}
 		}
 	}
+	go SavePermutations()
 
 	http.HandleFunc("/", home)
+	http.HandleFunc("/permutations", permutationList)
+	http.HandleFunc("/permutations/remaining", permutationRemainingList)
+	http.HandleFunc("/permutations/complete", permutationCompletedList)
+	http.HandleFunc("/permutations/succeeded", succeededList)
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 
@@ -126,7 +134,159 @@ func home(w http.ResponseWriter, r *http.Request) {
 	log.Println("Deleted", worker.Hostname)
 }
 
-func SaveResults(){
+func permutationList(w http.ResponseWriter, r *http.Request) {
+	// List of urls addition
+	if r.Method == "POST" {
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer file.Close()
+
+		var Buf bytes.Buffer
+		io.Copy(&Buf, file)
+
+		contents := Buf.String()
+		for _, link := range strings.Split(contents, "\n") {
+			trimmed := strings.TrimSpace(link)
+			if len(trimmed) > 0 {
+				found := false
+				jobsCompletedLock.Lock()
+				for _, c := range jobsCompleted {
+					if c == trimmed {
+						found = true
+					}
+				}
+				jobsCompletedLock.Unlock()
+
+				if !found {
+					u, err := url.Parse(trimmed)
+					if err != nil {
+						log.Fatalln(err)
+					}
+
+					jobsLock.Lock()
+					jobs[u.String()] = &Job{URL: u, StatusCode: -1, Body: ""}
+					jobsLock.Unlock()
+				}
+			}
+		}
+		return
+	}
+
+	// Single url addition
+	input := r.FormValue("url")
+	if input != "" {
+		// Check if we have already completed it
+		jobsCompletedLock.RLock()
+		for _, job := range jobsCompleted {
+			if input == job {
+				w.WriteHeader(http.StatusAlreadyReported)
+				return
+			}
+		}
+		jobsCompletedLock.RUnlock()
+
+		// Check if we already have it as a job
+		jobsLock.RLock()
+		for _, job := range jobs {
+			if input == job.URL.String() {
+				w.WriteHeader(http.StatusAlreadyReported)
+				return
+			}
+		}
+		jobsLock.RUnlock()
+
+		// Parse URL
+		u, err := url.Parse(input)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Add to job list
+		jobsLock.Lock()
+		jobs[input] = &Job{URL: u, StatusCode: -1, Body: ""}
+		jobsLock.Unlock()
+
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	// Return list
+	result := []string{}
+
+	jobsLock.RLock()
+	for _, job := range jobs {
+		result = append(result, job.URL.String())
+	}
+	jobsLock.RUnlock()
+
+	jobsCompletedLock.RLock()
+	for _, job := range jobsCompleted {
+		result = append(result, job)
+	}
+	jobsCompletedLock.RUnlock()
+
+	js, err := json.Marshal(&result)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(js)
+}
+
+func permutationRemainingList(w http.ResponseWriter, r *http.Request) {
+	result := []string{}
+
+	jobsLock.RLock()
+	for _, link := range jobs {
+		result = append(result, link.URL.String())
+	}
+	jobsLock.RUnlock()
+
+	js, err := json.Marshal(&result)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(js)
+}
+
+func permutationCompletedList(w http.ResponseWriter, r *http.Request) {
+	jobsCompletedLock.RLock()
+	js, err := json.Marshal(&jobsCompleted)
+	jobsCompletedLock.RUnlock()
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(js)
+}
+
+func succeededList(w http.ResponseWriter, r *http.Request) {
+	correctLock.RLock()
+	js, err := json.Marshal(&correct)
+	correctLock.RUnlock()
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(js)
+}
+
+func SaveResults() {
 	saved := 0
 
 	for {
@@ -147,6 +307,41 @@ func SaveResults(){
 			fOut.Close()
 
 			saved = completed
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func SavePermutations() {
+	saved := 0
+
+	for {
+		result := []string{}
+
+		jobsLock.RLock()
+		for _, job := range jobs {
+			result = append(result, job.URL.String())
+		}
+		jobsLock.RUnlock()
+
+		jobsCompletedLock.RLock()
+		for _, job := range jobsCompleted {
+			result = append(result, job)
+		}
+		jobsCompletedLock.RUnlock()
+
+		if len(result) > saved {
+			fOut, err := os.Create("permutations.txt")
+			if err != nil {
+				log.Fatalln(err)
+			}
+			for _, perm := range result {
+				fOut.WriteString(perm)
+
+			}
+			fOut.Close()
+
+			saved = len(result)
 		}
 		time.Sleep(1 * time.Second)
 	}
@@ -191,11 +386,22 @@ func (s *Worker) Read() {
 		s.Current = nil
 
 		jobsCompletedLock.Lock()
-		jobsCompleted = append(jobsCompleted, &result)
+		jobsCompleted = append(jobsCompleted, result.URL.String())
 		jobsCompletedLock.Unlock()
 
-		if strings.Contains(result.URL.Host, "bit.do"){
-
+		// Test if link was valid
+		if strings.Contains(result.URL.Host, "bit.do") {
+			if result.StatusCode == http.StatusOK && !strings.Contains(result.Body, "404 Not Found") {
+				correctLock.Lock()
+				correct = append(correct, result.URL.String())
+				correctLock.Unlock()
+			}
+		} else {
+			if result.StatusCode == http.StatusOK {
+				correctLock.Lock()
+				correct = append(correct, result.URL.String())
+				correctLock.Unlock()
+			}
 		}
 
 		jobsLock.Lock()

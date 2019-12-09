@@ -9,5 +9,4 @@ FROM alpine
 EXPOSE 8080
 WORKDIR /app
 COPY --from=build-env /src/goapp /app/
-ADD permutations.txt /app/
 ENTRYPOINT ./goapp
